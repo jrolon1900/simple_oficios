@@ -1,0 +1,346 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[spanish]{babel}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs,tabularx,array}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage[hidelinks]{hyperref}
+
+\lstset{
+  basicstyle=\ttfamily\small,
+  frame=single,
+  breaklines=true,
+  columns=fullflexible,
+  keepspaces=true,
+  backgroundcolor=\color{black!4},
+  rulecolor=\color{black!25}
+}
+\newcolumntype{Y}{>{\raggedright\arraybackslash}X}
+\newcommand{\code}[1]{\texttt{#1}}
+
+\title{Simple Oficios: servicio \code{mapas}\\[2pt]
+\large Directorio de talleres, ranking de mecánicos, agentes y decisiones de diseño}
+\author{Equipo Simple Oficios}
+\date{29 de octubre de 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Este documento describe la parte del proyecto que vive en la carpeta \code{mapas/}: un servicio
+de API que ofrece un directorio de talleres mecánicos filtrable por estado, un ranking de
+mecánicos basado en un orden lexicográfico, los agentes de inteligencia artificial que conducen
+la conversación con el cliente, y el modelo de decisión con el que se eligió cómo construirlo.
+Se indican también los límites de lo ya verificado y lo que sigue pendiente.
+\end{abstract}
+
+\tableofcontents
+
+%------------------------------------------------------------------------------
+\section{Alcance y premisas}
+
+Simple Oficios es un marketplace que conecta clientes con mecánicos confiables. Esta parte del
+proyecto cubre únicamente la búsqueda y recomendación de talleres y los agentes. Las premisas
+vigentes son:
+
+\begin{itemize}[nosep]
+  \item Piloto en la Ciudad de México (CDMX); el filtro por estado aplica a talleres y mecánicos.
+  \item Los \emph{leads} para los mecánicos son gratuitos: no hay pasarela de pagos.
+  \item La base de datos (Supabase) y sus pruebas las lleva otra persona del equipo; aquí solo
+        existe una propuesta de esquema, no aplicada.
+  \item El despliegue es en Vercel, como un servicio dentro de un proyecto con varios servicios.
+  \item Los datos geográficos son abiertos: el directorio DENUE y la Red Nacional de Caminos, ambos de INEGI.
+\end{itemize}
+
+%------------------------------------------------------------------------------
+\section{Arquitectura}
+
+El servicio es una aplicación FastAPI. Vercel entrega a cada servicio la ruta original de la
+petición, por lo que todas las rutas llevan el prefijo \code{/api/mapas}.
+
+\begin{lstlisting}
+simple_oficios/
+  vercel.json              servicio "mapas" y su rewrite
+  mapas/
+    main.py                API FastAPI bajo /api/mapas
+    config.py              modelo de lenguaje (cualquier API compatible con OpenAI)
+    agents/                diagnostico, matching, agenda y orquestador (Strands)
+    tools/                 estados, SCIAN, DENUE, ranking, cargadores de datos
+    decisiones/            modelo lexicografico y DECISIONES.md
+    tests/                 26 pruebas sin red ni claves
+    data/prod/             base minima de talleres de CDMX (sin telefonos)
+    docs/                  propuesta de esquema para Supabase (no aplicada)
+\end{lstlisting}
+
+\begin{table}[h]
+\centering
+\begin{tabularx}{\textwidth}{@{}l l Y@{}}
+\toprule
+Método & Ruta & Descripción \\
+\midrule
+GET  & \code{/api/mapas/health}    & Estado del servicio. \\
+GET  & \code{/api/mapas/estados}   & Los 32 estados con su clave INEGI. \\
+GET  & \code{/api/mapas/talleres}  & Directorio DENUE filtrado por estado. Por defecto mecánica y llantas; el parámetro \code{categorias} agrega, por ejemplo, \code{carroceria} (hojalatería y pintura). \\
+POST & \code{/api/mapas/solicitud} & Orquestador de agentes; responde 503 si no hay modelo configurado. \\
+\bottomrule
+\end{tabularx}
+\caption{Rutas del servicio.}
+\end{table}
+
+%------------------------------------------------------------------------------
+\section{Datos}
+
+\subsection{Directorio de talleres (INEGI DENUE)}
+
+Se usó la descarga masiva de DENUE para la CDMX, con corte 05/2026. Se conservan los
+establecimientos de la rama 8111 del SCIAN M\'exico 2023 (reparación y mantenimiento de automóviles
+y camiones). Las claves se verificaron contra el catálogo oficial y contra el propio archivo.
+Se cargaron \textbf{15\,318} establecimientos, todos con coordenadas y 7\,768 con teléfono.
+
+\begin{table}[h]
+\centering
+\begin{tabularx}{\textwidth}{@{}l Y r@{}}
+\toprule
+Categoría & Claves SCIAN & Talleres \\
+\midrule
+Mecánica   & 811111 a 811116 y 811119 (general, eléctrico, motor, transmisión, suspensión, alineación y balanceo, otras) & 9\,157 \\
+Carrocería (opcional) & 811121 a 811123 y 811129 (hojalatería y pintura, tapicería, blindaje, cristales) & 2\,495 \\
+Llantas    & 811191 (reparación menor de llantas) & 1\,786 \\
+Servicios  & 811192 y 811199 (lavado y lubricado, otros) & 1\,880 \\
+\bottomrule
+\end{tabularx}
+\caption{Establecimientos de la rama 8111 en la CDMX por categoría.}
+\end{table}
+
+\paragraph{Limitaciones.} DENUE no trae reseñas ni calificaciones. Tampoco distingue
+``frenos'' ni ``reparación de motor'' como especialidades: los frenos caen dentro de la
+mecánica general. Algunos registros tienen clasificación dudosa (por ejemplo, reparación de
+autoestéreos dentro de mecánica) o no tienen nombre comercial. La base que viaja a producción
+excluye teléfono, correo y sitio web.
+
+\subsection{Red Nacional de Caminos (INEGI)}
+
+La RNC 2025 se transformó en una base compacta nacional con \textbf{3\,343\,663} nodos y
+\textbf{4\,349\,691} tramos (395 MB, fuera del repositorio). Cada tramo conserva longitud,
+velocidad, sentido de circulación, estatus y peaje. Su licencia son los Términos de Libre Uso de INEGI.
+
+\paragraph{Hallazgos que condicionan su uso.}
+\begin{itemize}[nosep]
+  \item El catálogo menciona la clase ``Taller Mecánico'', pero los datos no traen ningún registro de esa clase: la RNC no sirve como directorio de talleres.
+  \item El campo de jurisdicción vale \code{N/A} en el 78\,\% de los tramos, por lo que no permite filtrar por estado.
+  \item Las velocidades son fijas y no incluyen tráfico.
+  \item \textbf{Supuesto sin verificar:} en los tramos de un solo sentido se circula de la unión inicial a la final.
+\end{itemize}
+
+%------------------------------------------------------------------------------
+\section{Ranking de mecánicos}
+
+\subsection{Cercanía}
+
+La distancia en línea recta entre el usuario $(\varphi_1,\lambda_1)$ y un taller $(\varphi_2,\lambda_2)$ es
+\begin{equation}
+d = 2R\,\arcsin\!\sqrt{\sin^2\!\frac{\varphi_2-\varphi_1}{2}
+      + \cos\varphi_1\cos\varphi_2\,\sin^2\!\frac{\lambda_2-\lambda_1}{2}},
+\qquad R = 6371\ \text{km}.
+\end{equation}
+Cuando se implemente el tiempo de viaje con la RNC, sustituirá a $d$ en el desempate:
+\begin{equation}
+t = \sum_{e\,\in\,\text{ruta}} \frac{L_e}{v_e},
+\end{equation}
+con $L_e$ la longitud y $v_e$ la velocidad de cada tramo $e$.
+
+\subsection{Experiencia con el problema}
+
+Cada mecánico recibe un nivel discreto $E\in\{0,1,2,3\}$. La preferencia es
+\begin{equation}
+E=3 \;\succ\; E=2 \;\succ\; E=1 \;\succ\; E=0.
+\end{equation}
+
+\begin{center}
+\begin{tabularx}{0.9\textwidth}{@{}c Y@{}}
+\toprule
+$E$ & Criterio \\
+\midrule
+0 & Sin evidencia. \\
+1 & Declara la especialidad requerida. \\
+2 & Al menos 1 trabajo verificado en esa especialidad con satisfacción $\ge 4$. \\
+3 & Al menos 5 trabajos verificados así. \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+El nivel es discreto a propósito: con una variable continua nunca habría empates y los criterios siguientes no se usarían.
+
+\subsection{Calificación ponderada por volumen}
+
+Con $R$ la calificación del taller, $n$ su número de reseñas, $C$ el promedio global y $m$ el peso del prior,
+\begin{equation}
+\tilde{R} = \frac{n}{n+m}\,R + \frac{m}{n+m}\,C,
+\qquad m = 50,\; C = 4{,}2 .
+\end{equation}
+Así un taller de 5 estrellas con una sola reseña no supera a uno de 4,5 con miles:
+
+\begin{center}
+\begin{tabular}{@{}l c c c@{}}
+\toprule
+Taller & $R$ & $n$ & $\tilde{R}$ \\
+\midrule
+A & 5,0 & 1      & 4,22 \\
+B & 4,5 & 10\,000 & 4,50 \\
+C & 4,8 & 20     & 4,37 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Clave lexicográfica y fases}
+
+Los talleres que pasan las puertas de calidad (calificación mínima y número mínimo de reseñas) se
+ordenan de forma ascendente por
+\begin{equation}
+\kappa(x) = \bigl(-E(x),\; -\tilde{R}(x),\; d(x)\bigr),
+\end{equation}
+comparando de izquierda a derecha: solo si coincide una componente se mira la siguiente. El flujo
+``los 5 mejores y más cercanos'' usa la misma clave sin la componente $E$.
+
+La búsqueda se hace en fases \emph{acumulativas} de \textbf{30, 60 y 100 talleres más cercanos}:
+son cantidades de talleres, no distancias. Se pasa a la fase siguiente solo si en la actual nadie
+pasa las puertas con $E\ge 1$. Si ninguna fase tiene un especialista, se informa y se ofrecen los
+mejor calificados y cercanos. Con los datos reales de la CDMX, los 100 talleres más cercanos
+caben en menos de 3,5 km en los puntos medidos, por lo que las fases importarán sobre todo en
+estados poco densos; falta definir un tope de distancia.
+
+\paragraph{Parámetros por revisar.} Los valores $m=50$ y las puertas (4,0 estrellas y 20 reseñas)
+vienen de un contexto de reseñas de Google. Con reseñas propias, al arrancar casi ningún taller los
+alcanzaría, así que son configurables y habrá que bajarlos.
+
+%------------------------------------------------------------------------------
+\section{Modelo de decisión lexicográfico}
+
+Cada opción de diseño recibe un vector de puntajes $s=(s_1,\dots,s_6)\in\{1,2,3\}^6$, donde 3 es mejor,
+uno por criterio. Dado un orden de prioridad $\pi$ de los criterios, la opción $a$ es preferida a $b$ si
+existe una posición $k$ tal que
+\begin{equation}
+s_{\pi(j)}(a) = s_{\pi(j)}(b)\ \ \forall j<k
+\quad\text{y}\quad
+s_{\pi(k)}(a) > s_{\pi(k)}(b).
+\end{equation}
+El método no compensa: una ventaja en un criterio de mayor prioridad vale más que cualquier cantidad
+de ventajas en los de menor prioridad. Por eso el orden es una decisión de valor del equipo.
+
+\begin{table}[h]
+\centering
+\begin{tabularx}{\textwidth}{@{}l Y@{}}
+\toprule
+Criterio & Qué mide \\
+\midrule
+C1 & Cubre el flujo núcleo (problema, recomendación, cita). \\
+C2 & Confianza de la recomendación. \\
+C3 & Riesgo bajo: legal, privacidad, términos de uso y dinero. \\
+C4 & Poco esfuerzo de implementación. \\
+C5 & Bajo costo operativo. \\
+C6 & Diferenciación y explicabilidad. \\
+\bottomrule
+\end{tabularx}
+\caption{Criterios. El orden fijado por el equipo es C1 $>$ C3 $>$ C2 $>$ C4 $>$ C5 $>$ C6.}
+\end{table}
+
+\paragraph{Advertencia.} Los puntajes son juicios del equipo, no mediciones. Como contexto de
+sensibilidad, para cada decisión se calculó en qué porcentaje de los 720 órdenes posibles de
+criterios gana cada opción (columna \emph{robustez}).
+
+\begin{table}[h]
+\centering
+\begin{tabularx}{\textwidth}{@{}l Y r@{}}
+\toprule
+Decisión & Opción que gana con el orden fijado & Robustez \\
+\midrule
+D1 Fuente de talleres & DENUE y mecánicos registrados & 75\,\% \\
+D2 Reputación y experiencia & Reseñas propias verificadas (nivel $E$ y promedio bayesiano) & 75\,\% \\
+D3 Prelista por cercanía & Los $k$ más cercanos: 30, 60 y 100 & 67\,\% \\
+D4 Ranking final & Lexicográfico con puertas y promedio bayesiano & 50\,\% \\
+D5 Agenda con el mecánico & Aprobación del mecánico, sin pago & 75\,\% \\
+D10 Cercanía real & Grafo de la RNC en dos etapas & 47\,\% \\
+D11 Modelo de lenguaje & Proveedor de pago (\textbf{pendiente} de confirmar con las claves disponibles) & 50\,\% \\
+D12 Arquitectura & Todo en Vercel & 100\,\% \\
+D13 Datos geográficos & SQLite embebida en la función (CDMX) & 67\,\% \\
+\bottomrule
+\end{tabularx}
+\caption{Decisiones generadas por el modelo (ver \code{mapas/decisiones/DECISIONES.md}).}
+\end{table}
+
+%------------------------------------------------------------------------------
+\section{Despliegue en Vercel}
+
+Se usa Vercel Services (en beta según su documentación), que permite varios servicios en un mismo
+proyecto. El archivo \code{vercel.json} de la raíz declara el servicio:
+
+\begin{lstlisting}
+{
+  "services": {
+    "mapas": { "root": "mapas/", "entrypoint": "main:app" }
+  },
+  "rewrites": [
+    { "source": "/api/mapas/(.*)", "destination": { "service": "mapas" } }
+  ]
+}
+\end{lstlisting}
+
+\paragraph{Límites verificados en la documentación de Vercel.}
+\begin{itemize}[nosep]
+  \item Paquete de una función Python: 500 MB descomprimido (5 GB en beta).
+  \item Duración máxima: 300 s en Hobby; 800 s en Pro. Esperar la respuesta de un modelo no cuenta como CPU activa.
+  \item Memoria: 2 GB en Hobby; hasta 4 GB en Pro. Carga útil por petición o respuesta: 4,5 MB.
+  \item El plan Hobby es solo para uso personal no comercial y no incluye funciones de equipo; Pro cuesta 20 USD por desarrollador al mes.
+  \item Las funciones corren por defecto en una región de la costa este de EE.\,UU.; conviene acercarla a la base de datos.
+\end{itemize}
+
+\paragraph{Pasos.} (1) Importar el repositorio en Vercel. (2) Definir \code{LLM\_API\_KEY},
+\code{LLM\_BASE\_URL} y \code{LLM\_MODEL} como variables de entorno del proyecto, nunca en el
+repositorio. (3) Fijar la región de las funciones. (4) Desplegar una rama como \emph{preview} y
+probar \code{/api/mapas/health}. El \code{vercel.json} sigue la documentación, pero
+\textbf{no se ha probado en un despliegue real}.
+
+%------------------------------------------------------------------------------
+\section{Pruebas}
+
+Hay 26 pruebas que no requieren red ni claves y que cubren el ordenamiento lexicográfico, los niveles
+$E$ y el promedio bayesiano, las fases de búsqueda, el cargador y el filtro de estado del directorio,
+y las rutas HTTP.
+
+\begin{lstlisting}
+cd mapas
+pip install -r requirements-dev.txt
+python -m pytest tests -q
+\end{lstlisting}
+
+No se han probado contra servicios reales: el modelo de lenguaje, la API de DENUE (se usó la descarga
+masiva), ni el despliegue en Vercel.
+
+%------------------------------------------------------------------------------
+\section{Limitaciones y pendientes}
+
+\begin{enumerate}[nosep]
+  \item Proveedor de las claves del modelo y sus términos de uso en producción (D11).
+  \item Cuenta propietaria y plan de Vercel (Hobby o Pro).
+  \item Tiempo de viaje con la RNC y verificación del sentido de circulación de los tramos.
+  \item Campo de estado en la tabla de mecánicos de la base de datos.
+  \item Valores de $m$, $C$ y de las puertas de calidad para reseñas propias.
+  \item Tope de distancia máxima para las fases de búsqueda en estados poco densos.
+  \item Extender el directorio a otros estados (se carga un estado por archivo de DENUE).
+  \item Reglas y tiempo disponible del reto.
+\end{enumerate}
+
+\section*{Fuentes}
+\begin{itemize}[nosep]
+  \item INEGI, Directorio Estadístico Nacional de Unidades Económicas (DENUE), descarga masiva, corte 05/2026.
+  \item INEGI, SCIAN México 2023, catálogo de clases.
+  \item INEGI, Red Nacional de Caminos 2025 (licencia: Términos de Libre Uso de la Información del INEGI).
+  \item Vercel, documentación de Functions, runtime de Python, FastAPI y Services.
+\end{itemize}
+
+\end{document}

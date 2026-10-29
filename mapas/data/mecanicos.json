@@ -1,0 +1,7 @@
+[
+  {"id": 1, "nombre": "Taller El Pistón", "especialidades": ["frenos", "suspension"], "lat": 4.6510, "lng": -74.0830, "rating": 4.7, "telefono": "+57 300 000 0001"},
+  {"id": 2, "nombre": "Mecánica Rápida Norte", "especialidades": ["motor", "electrico"], "lat": 4.6700, "lng": -74.0550, "rating": 4.5, "telefono": "+57 300 000 0002"},
+  {"id": 3, "nombre": "Auto Servicio Central", "especialidades": ["frenos", "motor", "llantas"], "lat": 4.6280, "lng": -74.0650, "rating": 4.2, "telefono": "+57 300 000 0003"},
+  {"id": 4, "nombre": "ElectroAuto Pro", "especialidades": ["electrico", "aire_acondicionado"], "lat": 4.6100, "lng": -74.0900, "rating": 4.8, "telefono": "+57 300 000 0004"},
+  {"id": 5, "nombre": "Llantas y Suspensión Sur", "especialidades": ["llantas", "suspension"], "lat": 4.5900, "lng": -74.1200, "rating": 4.0, "telefono": "+57 300 000 0005"}
+]

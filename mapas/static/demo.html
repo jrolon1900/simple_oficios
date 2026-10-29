@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Simple Oficios · mapas (demo)</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<style>
+  :root { --bg:#f6f5f2; --card:#fff; --ink:#1f1f1d; --muted:#6b6a65; --line:#dedcd5; --accent:#0f6e56; --accent-bg:#e1f5ee; --warn:#854f0b; --warn-bg:#faeeda; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; background:var(--bg); color:var(--ink); }
+  header { padding:14px 20px; border-bottom:1px solid var(--line); background:var(--card); }
+  header h1 { margin:0; font-size:18px; font-weight:600; }
+  header p { margin:2px 0 0; color:var(--muted); font-size:13px; }
+  main { display:grid; grid-template-columns: 340px 1fr; height: calc(100vh - 66px); }
+  aside { padding:16px; overflow:auto; border-right:1px solid var(--line); background:var(--card); }
+  label { display:block; font-size:13px; color:var(--muted); margin:12px 0 4px; }
+  select, button, input[type=range] { width:100%; font:inherit; }
+  select, button { padding:8px 10px; border:1px solid var(--line); border-radius:8px; background:var(--card); color:var(--ink); }
+  button { cursor:pointer; margin-top:8px; }
+  button.primary { background:var(--accent); color:#fff; border-color:var(--accent); }
+  .checks label { display:flex; gap:8px; align-items:center; margin:4px 0; color:var(--ink); font-size:14px; }
+  .hint { font-size:12px; color:var(--muted); margin-top:6px; }
+  .opt { font-size:11px; background:var(--warn-bg); color:var(--warn); border-radius:6px; padding:1px 6px; margin-left:4px; }
+  #map { height:100%; min-height:300px; }
+  ul { list-style:none; margin:12px 0 0; padding:0; }
+  li { border:1px solid var(--line); border-radius:10px; padding:9px 11px; margin-bottom:8px; cursor:pointer; }
+  li:hover { border-color:var(--accent); }
+  li b { display:block; }
+  li small { color:var(--muted); }
+  .tag { font-size:11px; background:var(--accent-bg); color:var(--accent); border-radius:6px; padding:1px 6px; }
+  .tag.no { background:#f1efe8; color:#5f5e5a; }
+  #estado { margin-top:12px; font-size:13px; color:var(--muted); }
+  @media (max-width: 800px) { main { grid-template-columns: 1fr; height:auto; } #map { height:340px; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Simple Oficios · directorio de talleres</h1>
+  <p>Demostración del servicio mapas. Datos de INEGI (DENUE). Los talleres del directorio aún no están registrados: no se pueden agendar.</p>
+</header>
+<main>
+  <aside>
+    <label for="sel-estado">Estado</label>
+    <select id="sel-estado"></select>
+
+    <label for="radio">Radio de búsqueda: <b id="radio-val">3</b> km</label>
+    <input id="radio" type="range" min="1" max="20" value="3">
+
+    <label>Categorías</label>
+    <div class="checks">
+      <label><input type="checkbox" value="mecanica" checked> Mecánica</label>
+      <label><input type="checkbox" value="llantas" checked> Llantas</label>
+      <label><input type="checkbox" value="carroceria"> Hojalatería y pintura <span class="opt">opcional</span></label>
+    </div>
+
+    <label for="sel-esp">Especialidad</label>
+    <select id="sel-esp">
+      <option value="">Cualquiera</option>
+      <option value="mecanica_general">Mecánica general</option>
+      <option value="electrico">Sistema eléctrico</option>
+      <option value="suspension">Suspensión</option>
+      <option value="transmision">Transmisión</option>
+      <option value="motor">Rectificación de motor</option>
+      <option value="alineacion_balanceo">Alineación y balanceo</option>
+      <option value="llantas">Llantas</option>
+    </select>
+
+    <button id="gps">Usar mi ubicación</button>
+    <div class="hint">Compartir la ubicación es opcional: solo sirve para recomendarte el taller más cercano. También puedes tocar el mapa.</div>
+    <button class="primary" id="buscar">Buscar talleres</button>
+
+    <div id="estado">Toca el mapa para elegir un punto.</div>
+    <ul id="lista"></ul>
+  </aside>
+  <div id="map"></div>
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script>
+  const API = location.pathname.replace(/\/demo\/?$/, "");
+  const map = L.map("map").setView([19.4326, -99.1332], 12);
+  L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    maxZoom: 19, attribution: "© OpenStreetMap contributors"
+  }).addTo(map);
+
+  let punto = null, pin = null, capa = L.layerGroup().addTo(map), circulo = null;
+  const $ = (id) => document.getElementById(id);
+
+  function ponerPunto(lat, lng) {
+    punto = { lat, lng };
+    if (pin) pin.setLatLng([lat, lng]);
+    else pin = L.circleMarker([lat, lng], { radius: 9, color: "#185fa5", fillColor: "#378add", fillOpacity: 0.9 }).addTo(map);
+    $("estado").textContent = `Punto elegido: ${lat.toFixed(4)}, ${lng.toFixed(4)}`;
+  }
+  map.on("click", (e) => { ponerPunto(e.latlng.lat, e.latlng.lng); buscar(); });
+  $("radio").addEventListener("input", () => { $("radio-val").textContent = $("radio").value; });
+  $("buscar").addEventListener("click", buscar);
+  $("gps").addEventListener("click", () => {
+    if (!navigator.geolocation) { $("estado").textContent = "Tu navegador no permite ubicación."; return; }
+    navigator.geolocation.getCurrentPosition(
+      (p) => { ponerPunto(p.coords.latitude, p.coords.longitude); map.setView([p.coords.latitude, p.coords.longitude], 14); buscar(); },
+      () => { $("estado").textContent = "No se compartió la ubicación. Toca el mapa para elegir un punto."; }
+    );
+  });
+
+  let estados = [];
+  const estadoActual = () => estados.find((e) => e.cve === $("sel-estado").value);
+  const conDatos = () => estados.filter((e) => e.con_datos).map((e) => e.nombre).join(", ") || "ninguno";
+
+  async function cargarEstados() {
+    const r = await fetch(`${API}/estados`);
+    estados = await r.json();
+    $("sel-estado").innerHTML = estados.map((e) =>
+      `<option value="${e.cve}" ${e.cve === "09" ? "selected" : ""}>${esc(e.nombre)}${e.con_datos ? "" : " (sin datos aún)"}</option>`).join("");
+  }
+
+  function limpiar() {
+    capa.clearLayers(); $("lista").innerHTML = "";
+    if (circulo) { map.removeLayer(circulo); circulo = null; }
+  }
+
+  $("sel-estado").addEventListener("change", () => {
+    const e = estadoActual();
+    if (!e) return;
+    map.flyTo([e.lat, e.lng], 11);
+    ponerPunto(e.lat, e.lng);
+    limpiar();
+    if (e.con_datos) buscar();
+    else $("estado").textContent = `Todavía no hay talleres cargados de ${e.nombre}. Por ahora hay datos de: ${conDatos()}.`;
+  });
+
+  async function buscar() {
+    if (!punto) { $("estado").textContent = "Primero toca el mapa para elegir un punto."; return; }
+    const e = estadoActual();
+    if (e && !e.con_datos) {
+      limpiar();
+      $("estado").textContent = `Todavía no hay talleres cargados de ${e.nombre}. Por ahora hay datos de: ${conDatos()}.`;
+      return;
+    }
+    const cats = [...document.querySelectorAll(".checks input:checked")].map((c) => c.value).join(",");
+    const params = new URLSearchParams({ estado: $("sel-estado").value, lat: punto.lat, lng: punto.lng,
+      radio_km: $("radio").value, limite: 15 });
+    if (cats) params.set("categorias", cats);
+    if ($("sel-esp").value) params.set("especialidad", $("sel-esp").value);
+    $("estado").textContent = "Buscando…";
+    const r = await fetch(`${API}/talleres?${params}`);
+    if (!r.ok) { const e = await r.json().catch(() => ({})); $("estado").textContent = `Error ${r.status}: ${e.detail || ""}`; return; }
+    const datos = await r.json();
+    limpiar();
+    circulo = L.circle([punto.lat, punto.lng], { radius: $("radio").value * 1000, color: "#0f6e56", weight: 1, fillOpacity: 0.04 }).addTo(map);
+    $("estado").textContent = datos.length ? `${datos.length} talleres a menos de ${$("radio").value} km` : "No hay talleres con esos filtros en ese radio.";
+    datos.forEach((t) => {
+      const m = L.circleMarker([t.lat, t.lng], { radius: 7, color: "#0f6e56", fillColor: "#1d9e75", fillOpacity: 0.85 })
+        .bindPopup(`<b>${esc(t.nombre)}</b><br>${esc(t.clase)}<br>${t.distancia_km} km`).addTo(capa);
+      const li = document.createElement("li");
+      li.innerHTML = `<b>${esc(t.nombre)}</b><small>${esc(t.especialidad.replace(/_/g, " "))} · ${esc(t.colonia || "")} · ${t.distancia_km} km</small> <span class="tag no">no registrado</span>`;
+      li.addEventListener("click", () => { map.setView([t.lat, t.lng], 16); m.openPopup(); });
+      $("lista").appendChild(li);
+    });
+  }
+  const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+  cargarEstados();
+</script>
+</body>
+</html>
